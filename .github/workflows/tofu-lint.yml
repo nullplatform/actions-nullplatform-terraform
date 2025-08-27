@@ -1,0 +1,21 @@
+name: tofu-lint
+
+on:
+  workflow_call:
+
+jobs:
+  build: 
+    runs-on: ubuntu-24.04
+    steps:
+       - name: Checkout repository
+         uses: actions/checkout@v4
+       - name:  Tofu 
+         uses: opentofu/setup-opentofu@v1
+         with: 
+            tofu_version: .opentofu-version
+       - run: tofu init 
+       - run: tofu fmt -check
+       - run: tofu validate -no-color
+        
+
+
