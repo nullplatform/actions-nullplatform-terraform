@@ -9,13 +9,16 @@ jobs:
     steps:
        - name: Checkout repository
          uses: actions/checkout@v4
-       - name:  Tofu 
+       - name:  Tofu setup
          uses: opentofu/setup-opentofu@v1
          with: 
-            tofu_version: .opentofu-version
-       - run: tofu init 
-       - run: tofu fmt -check
-       - run: tofu validate -no-color
+            tofu_version: v1.10.5
+       - name:  tofu init
+         run: tofu init 
+       - name: tofu fmt
+         run: tofu fmt -check
+       - name: tofu validate
+         run: tofu validate -no-color
         
 
 
