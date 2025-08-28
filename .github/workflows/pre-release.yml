@@ -1,0 +1,29 @@
+name: tofu-pre-release
+
+on:
+  workflow_call:
+
+jobs:
+  build: 
+    runs-on: ubuntu-24.04
+    steps:
+       - name: Checkout repository
+         uses: actions/checkout@v4
+         with:
+          fetch-depth: 0
+       - name: Fetch tags
+         run: git fetch --tags --force
+       - name: Setup Node
+         uses: actions/setup-node@v4
+         with:
+          node-version: 20
+        # Workaround requerido por el plugin en GitHub Actions:
+      # colocarse en la rama de la PR y deshabilitar la detección de Actions
+       - name: Post changelog preview comment
+         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+         run: |
+          git checkout -b "${{ github.head_ref }}"
+          unset GITHUB_ACTIONS
+          npx --yes semantic-release-github-pr
+       
