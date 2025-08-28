@@ -1,0 +1,16 @@
+name: tofu-release
+
+on:
+  workflow_call:
+
+jobs:
+  build: 
+    runs-on: ubuntu-24.04
+    steps:
+       - name: Checkout repository
+         uses: actions/checkout@v4
+       - name:  Release
+         uses: googleapis/release-please-action@v4
+         with:
+          release-type: terraform-module
+       
