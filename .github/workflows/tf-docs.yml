@@ -24,11 +24,8 @@ jobs:
     - name: Generate README.md for all modules under modules/
       uses: terraform-docs/gh-actions@v1.4.1
       with:
-          # Escanea todos los dirs con *.tf bajo 'modules/' y genera README en cada uno
         find-dir: .
         output-file: README.md
         config-file: ./.terraform-docs.yml
         output-method: inject    # usa marcadores <!-- BEGIN_TF_DOCS --> ... <!-- END_TF_DOCS -->
-        git-push: ${{ github.event_name != 'pull_request' }} # en push: true, en PR: false
-          # config-file: .terraform-docs.yml     # (opcional) si querés estilos/formato centralizado
-          # git-commit-message: "docs(terraform): actualizar README con terraform-docs"
+        git-push: ${{ github.event_name != 'pull_request' }} 

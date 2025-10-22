@@ -17,8 +17,6 @@ jobs:
          uses: actions/setup-node@v4
          with:
           node-version: 20
-        # Workaround requerido por el plugin en GitHub Actions:
-      # colocarse en la rama de la PR y deshabilitar la detección de Actions
        - name: Post changelog preview comment
          env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
