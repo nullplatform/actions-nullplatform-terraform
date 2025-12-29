@@ -1,0 +1,17 @@
+name: conventional-commit
+
+on:
+  workflow_call:
+
+jobs:
+  build: 
+    runs-on: ubuntu-24.04
+    steps:
+       - name: Checkout repository
+         uses: actions/checkout@v4
+         with:
+          fetch-depth: 0
+       - name:  Validate Commits
+         uses: wagoid/commitlint-github-action@v6
+        
+       
