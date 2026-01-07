@@ -29,3 +29,4 @@ jobs:
         config-file: ./.terraform-docs.yml
         output-method: inject    # usa marcadores <!-- BEGIN_TF_DOCS --> ... <!-- END_TF_DOCS -->
         git-push: ${{ github.event_name != 'pull_request' }} 
+        git-commit-message: "docs(terraform): update automated docs"
