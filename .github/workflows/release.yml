@@ -8,11 +8,6 @@ on:
         required: false
         type: boolean
         default: true
-      readme_pattern:
-        description: 'Glob pattern to find README files'
-        required: false
-        type: string
-        default: '**/README.md'
 
 permissions:
   contents: write
@@ -47,50 +42,20 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get previous tag
-        id: prev_tag
-        run: |
-          CURRENT_TAG="${{ needs.release.outputs.tag_name }}"
-          PREV_TAG=$(git tag --sort=-version:refname | grep -A1 "^${CURRENT_TAG}$" | tail -1)
-          if [ "$PREV_TAG" == "$CURRENT_TAG" ] || [ -z "$PREV_TAG" ]; then
-            PREV_TAG=$(git rev-list --max-parents=0 HEAD)
-          fi
-          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
-
-      - name: Find modified modules
-        id: modules
-        run: |
-          CURRENT_TAG="${{ needs.release.outputs.tag_name }}"
-          PREV_TAG="${{ steps.prev_tag.outputs.prev_tag }}"
-
-          CHANGED_FILES=$(git diff --name-only "$PREV_TAG" "$CURRENT_TAG" -- '*.tf' 2>/dev/null || echo "")
-
-          if [ -z "$CHANGED_FILES" ]; then
-            echo "dirs=" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          DIRS=$(echo "$CHANGED_FILES" | xargs -I {} dirname {} | sort -u | tr '\n' ' ')
-          echo "dirs=$DIRS" >> $GITHUB_OUTPUT
-
-      - name: Update README versions
-        if: steps.modules.outputs.dirs != ''
+      - name: Update all README versions
         run: |
           NEW_VERSION="${{ needs.release.outputs.tag_name }}"
-          MODIFIED_DIRS="${{ steps.modules.outputs.dirs }}"
+          echo "Updating all READMEs to $NEW_VERSION"
 
-          for dir in $MODIFIED_DIRS; do
-            README="$dir/README.md"
-            if [ -f "$README" ]; then
-              if grep -q "ref=v" "$README"; then
-                echo "Updating $README to $NEW_VERSION"
-                sed -i "s/ref=v[0-9]*\.[0-9]*\.[0-9]*/ref=$NEW_VERSION/g" "$README"
-              fi
+          # Find all READMEs with version references (excluding .terraform directories)
+          find . -name "README.md" -not -path "*/.terraform/*" -type f | while read -r README; do
+            if grep -q "ref=v[0-9]" "$README"; then
+              echo "Updating $README"
+              sed -i "s/ref=v[0-9]*\.[0-9]*\.[0-9]*/ref=$NEW_VERSION/g" "$README"
             fi
           done
 
       - name: Commit and push
-        if: steps.modules.outputs.dirs != ''
         run: |
           VERSION="${{ needs.release.outputs.tag_name }}"
 
@@ -102,7 +67,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "docs: update module READMEs to $VERSION [skip ci]"
+            git commit -m "docs: update all module READMEs to $VERSION [skip ci]"
             git push
           fi
         env:
