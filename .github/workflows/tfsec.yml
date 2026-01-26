@@ -1,0 +1,112 @@
+name: tfsec-security-scan
+
+on:
+  workflow_call:
+    inputs:
+      minimum_severity:
+        description: 'Minimum severity level to report (CRITICAL, HIGH, MEDIUM, LOW)'
+        required: false
+        type: string
+        default: 'HIGH'
+      upload_sarif:
+        description: 'Upload SARIF results to GitHub Security tab'
+        required: false
+        type: boolean
+        default: true
+      post_comment:
+        description: 'Post comment on PR if scan fails'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  tfsec:
+    name: tfsec Security Scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find Terraform files
+        id: modules
+        run: |
+          if [ -d "modules" ]; then
+            DIRS=$(find modules -name "*.tf" -exec dirname {} \; | sort -u | tr '\n' ' ')
+          else
+            DIRS=$(find . -name "*.tf" -not -path "./.terraform/*" -exec dirname {} \; | sort -u | tr '\n' ' ')
+          fi
+
+          if [ -z "$DIRS" ]; then
+            echo "No Terraform files found"
+            echo "dirs=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Found directories: $DIRS"
+          echo "dirs=$DIRS" >> $GITHUB_OUTPUT
+
+      - name: Install tfsec
+        if: steps.modules.outputs.dirs != ''
+        run: |
+          curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+          tfsec --version
+
+      - name: Run tfsec
+        if: steps.modules.outputs.dirs != ''
+        id: tfsec
+        run: |
+          EXIT_CODE=0
+          for dir in ${{ steps.modules.outputs.dirs }}; do
+            echo "Scanning $dir..."
+            if ! tfsec "$dir" --format lovely --minimum-severity ${{ inputs.minimum_severity }}; then
+              EXIT_CODE=1
+            fi
+          done
+          echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
+          exit $EXIT_CODE
+        continue-on-error: true
+
+      - name: Generate SARIF report
+        if: steps.modules.outputs.dirs != '' && inputs.upload_sarif
+        run: |
+          for dir in ${{ steps.modules.outputs.dirs }}; do
+            SAFE_NAME=$(echo "$dir" | tr '/' '-' | tr '.' '-')
+            tfsec "$dir" --format sarif --soft-fail --out "results-${SAFE_NAME}.sarif" || true
+          done
+
+          if ls results-*.sarif 1>/dev/null 2>&1; then
+            jq -s '.[0].runs = [.[].runs[]] | .[0]' results-*.sarif > results.sarif
+          fi
+
+      - name: Upload SARIF file
+        if: steps.modules.outputs.dirs != '' && inputs.upload_sarif && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+        continue-on-error: true
+
+      - name: Post failure comment
+        if: steps.tfsec.outputs.exit_code == '1' && inputs.post_comment && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Security Scan Failed
+
+            tfsec found security issues with **${{ inputs.minimum_severity }}** or higher severity.
+
+            Please review the workflow logs and fix the issues before merging.
+
+            [View Details](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+            })
+
+      - name: Fail if issues found
+        if: steps.tfsec.outputs.exit_code == '1'
+        run: exit 1

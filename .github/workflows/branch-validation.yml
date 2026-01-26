@@ -1,0 +1,37 @@
+name: branch-validation
+
+on:
+  workflow_call:
+    inputs:
+      pattern:
+        description: 'Regex pattern for branch name validation'
+        required: false
+        type: string
+        default: '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/.+$'
+
+jobs:
+  validate:
+    name: Validate Branch Name
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate branch name
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          PATTERN="${{ inputs.pattern }}"
+
+          if [[ -z "$BRANCH" ]]; then
+            echo "No branch name found (not a pull request?)"
+            exit 0
+          fi
+
+          if [[ ! "$BRANCH" =~ $PATTERN ]]; then
+            echo "::error::Invalid branch name: $BRANCH"
+            echo ""
+            echo "Branch name must follow the pattern: type/description"
+            echo "  Examples: feat/add-login, fix/bug-123, docs/readme"
+            echo ""
+            echo "Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+            exit 1
+          fi
+
+          echo "Branch name is valid: $BRANCH"
