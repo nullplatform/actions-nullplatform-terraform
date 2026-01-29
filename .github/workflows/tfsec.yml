@@ -34,59 +34,52 @@ jobs:
       - name: Find Terraform files
         id: modules
         run: |
-          if [ -d "modules" ]; then
-            DIRS=$(find modules -name "*.tf" -exec dirname {} \; | sort -u | tr '\n' ' ')
-          else
-            DIRS=$(find . -name "*.tf" -not -path "./.terraform/*" -exec dirname {} \; | sort -u | tr '\n' ' ')
-          fi
+          DIRS=$(find . -name "*.tf" -not -path "./.terraform/*" -exec dirname {} \; | sort -u | tr '\n' ' ')
 
           if [ -z "$DIRS" ]; then
             echo "No Terraform files found"
-            echo "dirs=" >> $GITHUB_OUTPUT
+            echo "has_tf_files=false" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           echo "Found directories: $DIRS"
+          echo "has_tf_files=true" >> $GITHUB_OUTPUT
           echo "dirs=$DIRS" >> $GITHUB_OUTPUT
 
       - name: Install tfsec
-        if: steps.modules.outputs.dirs != ''
+        if: steps.modules.outputs.has_tf_files == 'true'
         run: |
           curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
           tfsec --version
 
       - name: Run tfsec
-        if: steps.modules.outputs.dirs != ''
+        if: steps.modules.outputs.has_tf_files == 'true'
         id: tfsec
         run: |
           EXIT_CODE=0
           for dir in ${{ steps.modules.outputs.dirs }}; do
-            echo "Scanning $dir..."
+            echo "::group::Scanning $dir"
             if ! tfsec "$dir" --format lovely --minimum-severity ${{ inputs.minimum_severity }}; then
               EXIT_CODE=1
             fi
+            echo "::endgroup::"
           done
           echo "exit_code=$EXIT_CODE" >> $GITHUB_OUTPUT
-          exit $EXIT_CODE
         continue-on-error: true
 
       - name: Generate SARIF report
-        if: steps.modules.outputs.dirs != '' && inputs.upload_sarif
+        if: steps.modules.outputs.has_tf_files == 'true' && inputs.upload_sarif
         run: |
-          for dir in ${{ steps.modules.outputs.dirs }}; do
-            SAFE_NAME=$(echo "$dir" | tr '/' '-' | tr '.' '-')
-            tfsec "$dir" --format sarif --soft-fail --out "results-${SAFE_NAME}.sarif" || true
-          done
-
-          if ls results-*.sarif 1>/dev/null 2>&1; then
-            jq -s '.[0].runs = [.[].runs[]] | .[0]' results-*.sarif > results.sarif
-          fi
+          tfsec . --format sarif --soft-fail --out results.sarif \
+            --exclude-path .terraform \
+            --exclude-path node_modules || true
 
       - name: Upload SARIF file
-        if: steps.modules.outputs.dirs != '' && inputs.upload_sarif && hashFiles('results.sarif') != ''
+        if: steps.modules.outputs.has_tf_files == 'true' && inputs.upload_sarif && hashFiles('results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
+          category: tfsec
         continue-on-error: true
 
       - name: Post failure comment
