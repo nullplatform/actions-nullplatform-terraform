@@ -4,14 +4,27 @@ on:
   workflow_call:
 
 jobs:
-  build: 
+  build:
     runs-on: ubuntu-24.04
     steps:
-       - name: Checkout repository
-         uses: actions/checkout@v4
-         with:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
           fetch-depth: 0
-       - name:  Validate Commits
-         uses: wagoid/commitlint-github-action@v6
+
+      - name: Create commitlint config
+        run: |
+          cat > commitlint.config.mjs << 'EOF'
+          export default {
+            extends: ['@commitlint/config-conventional'],
+            rules: {
+              'type-enum': [2, 'always', ['feat', 'feature', 'fix', 'docs', 'style', 'refactor', 'perf', 'test', 'build', 'ci', 'chore', 'revert']],
+              'subject-case': [2, 'never', ['sentence-case', 'start-case', 'pascal-case', 'upper-case']],
+            },
+          };
+          EOF
+
+      - name: Validate Commits
+        uses: wagoid/commitlint-github-action@v6
         
        
