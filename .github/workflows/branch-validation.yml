@@ -7,7 +7,7 @@ on:
         description: 'Regex pattern for branch name validation'
         required: false
         type: string
-        default: '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/.+$'
+        default: '^(feat|feature|fix|docs|style|refactor|perf|test|build|ci|chore|revert)/.+$'
 
 jobs:
   validate:
@@ -30,7 +30,7 @@ jobs:
             echo "Branch name must follow the pattern: type/description"
             echo "  Examples: feat/add-login, fix/bug-123, docs/readme"
             echo ""
-            echo "Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+            echo "Valid types: feat, feature, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
             exit 1
           fi
 
