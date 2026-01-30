@@ -1,0 +1,37 @@
+name: tofu-test
+
+on:
+  workflow_call:
+    inputs:
+      modules:
+        description: 'JSON array of module paths to test (e.g. ["module/a", "module/b"])'
+        required: true
+        type: string
+      tofu_version:
+        description: 'OpenTofu version to use'
+        required: false
+        type: string
+        default: '1.10.6'
+
+jobs:
+  test:
+    name: "Test ${{ matrix.module }}"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(inputs.modules) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ inputs.tofu_version }}
+
+      - name: Run tofu init
+        working-directory: ${{ matrix.module }}
+        run: tofu init -backend=false
+
+      - name: Run tofu test
+        working-directory: ${{ matrix.module }}
+        run: tofu test
