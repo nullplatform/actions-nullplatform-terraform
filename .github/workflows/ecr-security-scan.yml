@@ -1,0 +1,155 @@
+name: ECR Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      image_names:
+        description: 'JSON array of image names to scan (e.g., ["k8s-logs-controller", "k8s-traffic-manager"])'
+        required: true
+        type: string
+      ecr_registry:
+        description: 'ECR registry URL'
+        required: false
+        type: string
+        default: 'public.ecr.aws/nullplatform'
+      severity:
+        description: 'Minimum severity to report (CRITICAL,HIGH,MEDIUM,LOW)'
+        required: false
+        type: string
+        default: 'CRITICAL,HIGH'
+      aws_region:
+        description: 'AWS region for ECR'
+        required: false
+        type: string
+        default: 'us-east-1'
+    secrets:
+      aws_role_arn:
+        description: 'AWS IAM Role ARN for OIDC authentication'
+        required: true
+      slack_webhook_url:
+        description: 'Slack webhook URL for vulnerability alerts'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  scan:
+    name: Scan ECR Images
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR Public
+        run: |
+          aws ecr-public get-login-password --region us-east-1 | \
+            docker login --username AWS --password-stdin public.ecr.aws
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Get latest tags and scan images
+        id: scan
+        run: |
+          IMAGE_NAMES='${{ inputs.image_names }}'
+          REGISTRY='${{ inputs.ecr_registry }}'
+          SEVERITY='${{ inputs.severity }}'
+
+          VULNERABILITIES_FOUND=false
+          REPORT=""
+
+          for IMAGE_NAME in $(echo "$IMAGE_NAMES" | jq -r '.[]'); do
+            echo "Finding latest tag for ${IMAGE_NAME}..."
+
+            # Get latest semver tag from ECR Public
+            LATEST_TAG=$(aws ecr-public describe-image-tags \
+              --repository-name "${IMAGE_NAME}" \
+              --region us-east-1 \
+              --query 'imageTagDetails[?imageTag!=`null`].imageTag' \
+              --output text 2>/dev/null | tr '\t' '\n' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+
+            if [ -z "${LATEST_TAG}" ]; then
+              echo "  No semver tags found for ${IMAGE_NAME}, skipping..."
+              continue
+            fi
+
+            FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}:${LATEST_TAG}"
+            echo "Scanning ${FULL_IMAGE}..."
+
+            # Pull the image
+            docker pull "${FULL_IMAGE}" || continue
+
+            # Run Trivy and capture output
+            RESULT=$(trivy image --severity "${SEVERITY}" --ignore-unfixed --format json "${FULL_IMAGE}" 2>/dev/null || echo "{}")
+
+            # Count vulnerabilities
+            CRITICAL=$(echo "$RESULT" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' 2>/dev/null || echo "0")
+            HIGH=$(echo "$RESULT" | jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' 2>/dev/null || echo "0")
+
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+              VULNERABILITIES_FOUND=true
+              REPORT="${REPORT}\n*${IMAGE_NAME}:${LATEST_TAG}*: ${CRITICAL} critical, ${HIGH} high"
+            fi
+
+            echo "  Critical: ${CRITICAL}, High: ${HIGH}"
+          done
+
+          echo "vulnerabilities_found=${VULNERABILITIES_FOUND}" >> $GITHUB_OUTPUT
+
+          # Save report for Slack (escape newlines for JSON)
+          REPORT_ESCAPED=$(echo -e "$REPORT" | sed 's/"/\\"/g' | tr '\n' '|' | sed 's/|/\\n/g')
+          echo "report=${REPORT_ESCAPED}" >> $GITHUB_OUTPUT
+
+      - name: Send Slack alert
+        if: steps.scan.outputs.vulnerabilities_found == 'true'
+        run: |
+          REPORT='${{ steps.scan.outputs.report }}'
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{
+              \"blocks\": [
+                {
+                  \"type\": \"header\",
+                  \"text\": {
+                    \"type\": \"plain_text\",
+                    \"text\": \"Security Alert: Vulnerabilities Found\",
+                    \"emoji\": true
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"The following images have CRITICAL or HIGH vulnerabilities:\\n${REPORT}\"
+                  }
+                },
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"<${RUN_URL}|View full scan results>\"
+                  }
+                }
+              ]
+            }" \
+            '${{ secrets.slack_webhook_url }}'
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.scan.outputs.vulnerabilities_found }}" == "true" ]; then
+            echo "::warning::Vulnerabilities found in one or more images"
+          else
+            echo "No critical or high vulnerabilities found"
+          fi
