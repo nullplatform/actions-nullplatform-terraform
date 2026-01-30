@@ -1,0 +1,408 @@
+name: Changelog and Release
+
+on:
+  workflow_call:
+    inputs:
+      project-type:
+        description: 'Type of project: helm-charts, npm, generic'
+        type: string
+        default: 'generic'
+      source-dir:
+        description: 'Directory containing packages/charts (use . for root)'
+        type: string
+        default: '.'
+      version-file:
+        description: 'Version file name (Chart.yaml, package.json, VERSION). Auto-detected if not specified.'
+        type: string
+        default: ''
+      tag-prefix:
+        description: 'Prefix for git tags (e.g., "v" for v1.0.0). Use empty for no prefix.'
+        type: string
+        default: ''
+      create-github-release:
+        description: 'Create a GitHub Release'
+        type: boolean
+        default: true
+      commit-message:
+        description: 'Commit message for version bump'
+        type: string
+        default: 'chore(release): bump version and update changelog [skip ci]'
+    outputs:
+      has_changes:
+        description: 'Whether there were changes to release'
+        value: ${{ jobs.release.outputs.has_changes }}
+      new_version:
+        description: 'The new version number'
+        value: ${{ jobs.release.outputs.new_version }}
+      changelog:
+        description: 'The generated changelog content'
+        value: ${{ jobs.release.outputs.changelog }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.changelog.outputs.has_changes }}
+      new_version: ${{ steps.changelog.outputs.new_version }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Generate changelog and bump version
+        id: changelog
+        env:
+          PROJECT_TYPE: ${{ inputs.project-type }}
+          SOURCE_DIR: ${{ inputs.source-dir }}
+          VERSION_FILE: ${{ inputs.version-file }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Determine directories to process
+          if [ "$PROJECT_TYPE" = "helm-charts" ]; then
+            source_dir="${SOURCE_DIR:-charts}"
+            # Find changed chart directories
+            if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
+              diff_range="${BASE_SHA}..${HEAD_SHA}"
+            else
+              diff_range="${HEAD_SHA}~1..${HEAD_SHA}"
+            fi
+            changed_dirs=$(git diff --name-only "$diff_range" -- "$source_dir/" 2>/dev/null | awk -F/ -v src="$source_dir" '$1==src && NF>=2 {print $1"/"$2}' | sort -u || true)
+          else
+            # For npm/generic, use source dir directly
+            changed_dirs="$SOURCE_DIR"
+          fi
+
+          if [ -z "$changed_dirs" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No changes detected"
+            exit 0
+          fi
+
+          # Detect version file
+          detect_version_file() {
+            local dir="$1"
+            if [ -n "$VERSION_FILE" ]; then
+              echo "$VERSION_FILE"
+            elif [ -f "$dir/Chart.yaml" ]; then
+              echo "Chart.yaml"
+            elif [ -f "$dir/package.json" ]; then
+              echo "package.json"
+            elif [ -f "$dir/VERSION" ]; then
+              echo "VERSION"
+            else
+              echo ""
+            fi
+          }
+
+          # Get version from file
+          get_version() {
+            local dir="$1"
+            local file="$2"
+            case "$file" in
+              Chart.yaml)
+                awk -F': *' '$1=="version"{print $2; exit}' "$dir/$file"
+                ;;
+              package.json)
+                grep -o '"version": *"[^"]*"' "$dir/$file" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
+                ;;
+              VERSION)
+                cat "$dir/$file" | tr -d '[:space:]'
+                ;;
+            esac
+          }
+
+          # Get name from file
+          get_name() {
+            local dir="$1"
+            local file="$2"
+            case "$file" in
+              Chart.yaml)
+                awk -F': *' '$1=="name"{print $2; exit}' "$dir/$file"
+                ;;
+              package.json)
+                grep -o '"name": *"[^"]*"' "$dir/$file" | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/'
+                ;;
+              VERSION)
+                basename "$dir"
+                ;;
+            esac
+          }
+
+          # Set version in file
+          set_version() {
+            local dir="$1"
+            local file="$2"
+            local version="$3"
+            case "$file" in
+              Chart.yaml)
+                perl -0pi -e "s/^version:\\s*.*/version: ${version}/m" "$dir/$file"
+                ;;
+              package.json)
+                sed -i "s/\"version\": *\"[^\"]*\"/\"version\": \"${version}\"/" "$dir/$file"
+                ;;
+              VERSION)
+                echo "$version" > "$dir/$file"
+                ;;
+            esac
+          }
+
+          # Process each directory
+          all_changelogs=""
+          all_tags=""
+          final_version=""
+
+          for dir in $changed_dirs; do
+            version_file=$(detect_version_file "$dir")
+            if [ -z "$version_file" ]; then
+              echo "No version file found in $dir, skipping"
+              continue
+            fi
+
+            name=$(get_name "$dir" "$version_file")
+            version=$(get_version "$dir" "$version_file")
+
+            if [ -z "$name" ] || [ -z "$version" ]; then
+              echo "Missing name or version in $dir/$version_file" >&2
+              continue
+            fi
+
+            echo "Processing: $name v$version in $dir"
+
+            # Find last tag for this package
+            if [ "$PROJECT_TYPE" = "helm-charts" ] || [ "$PROJECT_TYPE" = "npm" ]; then
+              last_tag=$(git tag --list "${name}-*" --sort=-v:refname 2>/dev/null | head -n1 || true)
+              if [ -z "$last_tag" ]; then
+                last_tag=$(git tag --list "${TAG_PREFIX}${name}-*" --sort=-v:refname 2>/dev/null | head -n1 || true)
+              fi
+            else
+              last_tag=$(git tag --list "${TAG_PREFIX}*" --sort=-v:refname 2>/dev/null | grep -E "^${TAG_PREFIX}[0-9]+\.[0-9]+\.[0-9]+$" | head -n1 || true)
+            fi
+
+            # Determine commit range
+            if [ -n "$last_tag" ]; then
+              range="${last_tag}..${HEAD_SHA}"
+            else
+              range=""
+            fi
+
+            # Get commits
+            if [ -n "$range" ]; then
+              log=$(git log "$range" --format=%s%n%b -- "$dir" 2>/dev/null || true)
+              subjects=$(git log "$range" --format=%s -- "$dir" 2>/dev/null || true)
+              commits=$(git log "$range" --format="%H %s" -- "$dir" 2>/dev/null || true)
+            else
+              log=$(git log --format=%s%n%b -- "$dir" 2>/dev/null || true)
+              subjects=$(git log --format=%s -- "$dir" 2>/dev/null || true)
+              commits=$(git log --format="%H %s" -- "$dir" 2>/dev/null || true)
+            fi
+
+            if [ -z "$subjects" ]; then
+              echo "No commits found for $dir"
+              continue
+            fi
+
+            # Determine version bump
+            bump="patch"
+            if echo "$log" | grep -q "BREAKING CHANGE"; then
+              bump="major"
+            fi
+            if echo "$subjects" | grep -Eq '^[a-zA-Z]+(\([^)]+\))?!:'; then
+              bump="major"
+            fi
+            if [ "$bump" != "major" ]; then
+              if echo "$subjects" | grep -Eq '^feat(\([^)]+\))?:'; then
+                bump="minor"
+              elif echo "$subjects" | grep -Eq '^(fix|perf)(\([^)]+\))?:'; then
+                bump="patch"
+              fi
+            fi
+
+            # Calculate new version
+            IFS='.' read -r major minor patch <<< "$version"
+            case "$bump" in
+              major) major=$((major+1)); minor=0; patch=0 ;;
+              minor) minor=$((minor+1)); patch=0 ;;
+              patch) patch=$((patch+1)) ;;
+            esac
+            new_version="${major}.${minor}.${patch}"
+            final_version="$new_version"
+
+            echo "  Bump: $bump ($version -> $new_version)"
+
+            # Update version file
+            set_version "$dir" "$version_file" "$new_version"
+
+            # Build changelog
+            changelog_file="$dir/CHANGELOG.md"
+            date=$(date -u +%Y-%m-%d)
+
+            # Build version header with compare URL
+            if [ "$PROJECT_TYPE" = "helm-charts" ] || [ "$PROJECT_TYPE" = "npm" ]; then
+              new_tag="${name}-${new_version}"
+            else
+              new_tag="${TAG_PREFIX}${new_version}"
+            fi
+
+            if [ -n "$last_tag" ]; then
+              version_header="## [${new_version}](${REPO_URL}/compare/${last_tag}...${new_tag}) (${date})"
+            else
+              version_header="## [${new_version}](${REPO_URL}/releases/tag/${new_tag}) (${date})"
+            fi
+
+            # Initialize sections
+            breaking_changes=""
+            features=""
+            fixes=""
+            perf=""
+            reverts=""
+
+            # Parse commits
+            while IFS= read -r line; do
+              [ -z "$line" ] && continue
+
+              hash=$(echo "$line" | cut -d' ' -f1)
+              short_hash="${hash:0:7}"
+              subject=$(echo "$line" | cut -d' ' -f2-)
+
+              # Check for breaking change
+              is_breaking=""
+              if echo "$subject" | grep -Eq '^[a-zA-Z]+(\([^)]+\))?!:'; then
+                is_breaking="true"
+              fi
+
+              # Parse conventional commit
+              if echo "$subject" | grep -Eq '^[a-zA-Z]+(\([^)]+\))?!?:'; then
+                type=$(echo "$subject" | sed -E 's/^([a-zA-Z]+)(\([^)]+\))?!?:.*/\1/')
+                scope=$(echo "$subject" | sed -E 's/^[a-zA-Z]+(\(([^)]+)\))?!?:.*/\2/')
+                message=$(echo "$subject" | sed -E 's/^[a-zA-Z]+(\([^)]+\))?!?:[[:space:]]*//')
+              else
+                type="other"
+                scope=""
+                message="$subject"
+              fi
+
+              # Format entry
+              if [ -n "$scope" ]; then
+                entry="* **${scope}:** ${message} ([${short_hash}](${REPO_URL}/commit/${hash}))"
+              else
+                entry="* ${message} ([${short_hash}](${REPO_URL}/commit/${hash}))"
+              fi
+
+              # Categorize
+              case "$type" in
+                feat) features="${features}${entry}"$'\n' ;;
+                fix) fixes="${fixes}${entry}"$'\n' ;;
+                perf) perf="${perf}${entry}"$'\n' ;;
+                revert) reverts="${reverts}${entry}"$'\n' ;;
+              esac
+
+              if [ -n "$is_breaking" ]; then
+                breaking_changes="${breaking_changes}${entry}"$'\n'
+              fi
+            done <<< "$commits"
+
+            # Build changelog content
+            content="${version_header}"$'\n'
+
+            if [ -n "$breaking_changes" ]; then
+              content="${content}"$'\n\n'"### BREAKING CHANGES"$'\n\n'"${breaking_changes}"
+            fi
+            if [ -n "$features" ]; then
+              content="${content}"$'\n\n'"### Features"$'\n\n'"${features}"
+            fi
+            if [ -n "$fixes" ]; then
+              content="${content}"$'\n\n'"### Bug Fixes"$'\n\n'"${fixes}"
+            fi
+            if [ -n "$perf" ]; then
+              content="${content}"$'\n\n'"### Performance Improvements"$'\n\n'"${perf}"
+            fi
+            if [ -n "$reverts" ]; then
+              content="${content}"$'\n\n'"### Reverts"$'\n\n'"${reverts}"
+            fi
+
+            # Write changelog
+            if [ -f "$changelog_file" ]; then
+              if [ "$(head -n 1 "$changelog_file")" = "# Changelog" ]; then
+                { printf "# Changelog\n\n%s\n" "$content"; tail -n +2 "$changelog_file"; } > "${changelog_file}.tmp"
+              else
+                { printf "# Changelog\n\n%s\n\n" "$content"; cat "$changelog_file"; } > "${changelog_file}.tmp"
+              fi
+            else
+              { printf "# Changelog\n\n%s\n" "$content"; } > "${changelog_file}.tmp"
+            fi
+            mv "${changelog_file}.tmp" "$changelog_file"
+
+            all_tags="${all_tags}${new_tag}"$'\n'
+            all_changelogs="${all_changelogs}${content}"$'\n\n'
+          done
+
+          if [ -z "$all_tags" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Save outputs
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          echo "new_version=${final_version}" >> "$GITHUB_OUTPUT"
+
+          # Save tags for later steps
+          echo "$all_tags" > /tmp/release-tags
+
+          # Save changelog (escape for multiline output)
+          {
+            echo "changelog<<EOF"
+            echo "$all_changelogs"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push changes
+        if: steps.changelog.outputs.has_changes == 'true'
+        env:
+          COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "$COMMIT_MESSAGE"
+            git push origin ${GITHUB_REF#refs/heads/}
+          fi
+
+      - name: Create and push tags
+        if: steps.changelog.outputs.has_changes == 'true'
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            if ! git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "Creating tag: $tag"
+              git tag "$tag"
+            fi
+          done < /tmp/release-tags
+          git push origin --tags
+
+      - name: Create GitHub Release
+        if: steps.changelog.outputs.has_changes == 'true' && inputs.create-github-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANGELOG: ${{ steps.changelog.outputs.changelog }}
+        run: |
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Creating release for: $tag"
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "$CHANGELOG" \
+              --latest \
+              || echo "Release $tag may already exist"
+          done < /tmp/release-tags
