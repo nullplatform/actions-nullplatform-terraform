@@ -1,0 +1,102 @@
+name: Docker Build and Push to ECR
+
+on:
+  workflow_call:
+    inputs:
+      image_name:
+        description: 'Name of the Docker image (e.g., k8s-logs-controller)'
+        required: true
+        type: string
+      context:
+        description: 'Build context directory'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to context'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      platforms:
+        description: 'Target platforms for multi-arch build'
+        required: false
+        type: string
+        default: 'linux/amd64,linux/arm64'
+      ecr_registry:
+        description: 'ECR registry URL'
+        required: false
+        type: string
+        default: 'public.ecr.aws/nullplatform'
+      tag:
+        description: 'Additional tag for the image (latest and sha are always added)'
+        required: false
+        type: string
+        default: ''
+      aws_region:
+        description: 'AWS region for ECR'
+        required: false
+        type: string
+        default: 'us-east-1'
+    secrets:
+      aws_role_arn:
+        description: 'AWS IAM Role ARN for OIDC authentication'
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    name: Build and Push
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.aws_role_arn }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR Public
+        run: |
+          aws ecr-public get-login-password --region us-east-1 | \
+            docker login --username AWS --password-stdin public.ecr.aws
+
+      - name: Generate image tags
+        id: tags
+        run: |
+          REGISTRY="${{ inputs.ecr_registry }}"
+          IMAGE="${{ inputs.image_name }}"
+          TAG="${{ inputs.tag }}"
+
+          if [ -z "${TAG}" ]; then
+            echo "::error::Tag is required for builds"
+            exit 1
+          fi
+
+          # Extract version from tag (e.g., logs-controller-v2.0.0 -> v2.0.0)
+          VERSION=$(echo "${TAG}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || echo "${TAG}")
+          TAGS="${REGISTRY}/${IMAGE}:${VERSION}"
+
+          echo "tags=${TAGS}" >> $GITHUB_OUTPUT
+          echo "Generated tags: ${TAGS}"
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

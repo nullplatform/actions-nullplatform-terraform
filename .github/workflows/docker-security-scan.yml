@@ -1,0 +1,87 @@
+name: Docker Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      context:
+        description: 'Build context directory'
+        required: true
+        type: string
+      dockerfile:
+        description: 'Path to Dockerfile relative to context'
+        required: false
+        type: string
+        default: 'Dockerfile'
+      image_name:
+        description: 'Name for the scanned image (used for reporting)'
+        required: true
+        type: string
+      severity:
+        description: 'Minimum severity to report (CRITICAL,HIGH,MEDIUM,LOW)'
+        required: false
+        type: string
+        default: 'CRITICAL,HIGH'
+      exit_code:
+        description: 'Exit code when vulnerabilities are found (0 to not fail)'
+        required: false
+        type: number
+        default: 1
+      upload_sarif:
+        description: 'Upload SARIF results to GitHub Security tab'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.context }}/${{ inputs.dockerfile }}
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ inputs.image_name }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ inputs.image_name }}:scan'
+          format: 'table'
+          exit-code: '${{ inputs.exit_code }}'
+          severity: '${{ inputs.severity }}'
+          ignore-unfixed: true
+
+      - name: Run Trivy and generate SARIF
+        if: inputs.upload_sarif && always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ inputs.image_name }}:scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: '${{ inputs.severity }}'
+          ignore-unfixed: true
+
+      - name: Upload SARIF to GitHub Security
+        if: inputs.upload_sarif && always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: '${{ inputs.image_name }}'
