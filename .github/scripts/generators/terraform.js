@@ -204,7 +204,13 @@ function generateReadme(dir, parsed, context) {
   const { moduleName, requiredVars, outputs, tag, repository } = context;
 
   // Build module source URL - use relative path from repo root
-  const modulePath = dir.replace(/^\.\//, '').replace(/^\/.*\/infrastructure\//, '');
+  // Handle both absolute paths (/Users/.../infrastructure/aws/s3) and relative paths (infrastructure/aws/s3)
+  let modulePath = dir.replace(/^\.\//, '');
+  // If it's an absolute path, extract from 'infrastructure/' onwards
+  const infraMatch = modulePath.match(/(?:^|\/)(infrastructure\/.*)$/);
+  if (infraMatch) {
+    modulePath = infraMatch[1];
+  }
   const moduleSource = `git::https://github.com/${repository}.git//${modulePath}?ref=${tag}`;
 
   // Build Basic Usage with only required variables
