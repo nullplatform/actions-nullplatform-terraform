@@ -58,6 +58,15 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Checkout scripts from actions-nullplatform
+        uses: actions/checkout@v4
+        with:
+          repository: nullplatform/actions-nullplatform
+          path: .actions-scripts
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
       - name: Find modified directories
         if: ${{ !inputs.generate_all }}
         id: changes
@@ -97,7 +106,7 @@ jobs:
             TYPE_ARG="--type ${{ inputs.generator_type }}"
           fi
 
-          node .github/scripts/generate-readme-v2.js \
+          node .actions-scripts/.github/scripts/generate-readme-v2.js \
             --verbose \
             $TYPE_ARG \
             ${{ steps.changes.outputs.dirs }}
@@ -117,7 +126,7 @@ jobs:
             TYPE_ARG="--type ${{ inputs.generator_type }}"
           fi
 
-          node .github/scripts/generate-readme-v2.js \
+          node .actions-scripts/.github/scripts/generate-readme-v2.js \
             --all \
             --base-dir "${{ inputs.base_dir }}" \
             --verbose \
