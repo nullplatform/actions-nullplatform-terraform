@@ -2,7 +2,7 @@
 
 /**
  * README Generator v2
- * Multi-project type README generator using GitHub Models API
+ * Multi-project type README generator with multi-provider AI support
  *
  * Usage:
  *   node generate-readme-v2.js [directories...]
@@ -16,13 +16,25 @@
  *   --type <type>      Force generator type (terraform, typescript, python, generic)
  *   --dry-run          Print what would be generated without writing files
  *   --verbose          Print detailed output
+ *
+ * Environment Variables:
+ *   AI_PROVIDER        AI provider (groq, github, openai, anthropic) - default: groq
+ *   AI_MODEL           Model to use (provider-specific)
+ *   GROQ_API_KEY       API key for Groq
+ *   GITHUB_TOKEN       Token for GitHub Models
+ *   OPENAI_API_KEY     API key for OpenAI
+ *   ANTHROPIC_API_KEY  API key for Anthropic
+ *   GITHUB_REPOSITORY  Repository name for source URLs
  */
 
 const fs = require('fs');
 const path = require('path');
 
-const { callGitHubModel, parseAIResponse } = require('./core/github-models');
+const { callAI, parseAIResponse, getProviderInfo, sleep } = require('./core/ai-client');
 const { findDirectoriesWithFiles, getNameFromPath } = require('./core/file-utils');
+
+// Delay between API calls to prevent rate limiting (ms)
+const DELAY_BETWEEN_CALLS_MS = 2000;
 const { detectGenerator, getGeneratorByName, listGenerators } = require('./generators');
 
 // Parse command line arguments
@@ -80,20 +92,24 @@ Options:
 Available generators:
 ${listGenerators().map(g => `  - ${g.name}: ${g.displayName}`).join('\n')}
 
+Environment Variables:
+  AI_PROVIDER        AI provider (groq, github, openai, anthropic) - default: groq
+  AI_MODEL           Optional - Model to use (provider-specific)
+  GROQ_API_KEY       API key for Groq
+  GITHUB_TOKEN       Token for GitHub Models
+  OPENAI_API_KEY     API key for OpenAI
+  ANTHROPIC_API_KEY  API key for Anthropic
+  GITHUB_REPOSITORY  Optional - Repository name for source URLs
+
 Examples:
   # Auto-detect and generate for specific directories
-  node generate-readme-v2.js ./modules/vpc ./modules/rds
+  AI_PROVIDER=groq node generate-readme-v2.js ./modules/vpc ./modules/rds
 
   # Generate for all Terraform modules
-  node generate-readme-v2.js --all --base-dir ./infrastructure --type terraform
+  AI_PROVIDER=github node generate-readme-v2.js --all --base-dir ./infrastructure --type terraform
 
-  # Generate for a TypeScript project
-  node generate-readme-v2.js --type typescript ./packages/api
-
-Environment Variables:
-  GITHUB_TOKEN       Required - GitHub token for Models API
-  AI_MODEL           Optional - Model to use (default: gpt-4o)
-  GITHUB_REPOSITORY  Optional - Repository name for source URLs
+  # Generate for a TypeScript project with OpenAI
+  AI_PROVIDER=openai node generate-readme-v2.js --type typescript ./packages/api
 `);
 }
 
@@ -149,8 +165,9 @@ async function generateReadmeForDirectory(dir, options) {
     }
 
     // Call AI
-    console.log(`   🤖 Calling GitHub Models API...`);
-    const aiResponse = await callGitHubModel(userPrompt, systemPrompt);
+    const { name: providerName, model } = getProviderInfo();
+    console.log(`   🤖 Calling ${providerName} (${model})...`);
+    const aiResponse = await callAI(systemPrompt, userPrompt);
     const parsed = parseAIResponse(aiResponse);
 
     if (verbose) {
@@ -246,9 +263,12 @@ async function main() {
   const args = process.argv.slice(2);
   const options = parseArgs(args);
 
-  // Validate
-  if (!process.env.GITHUB_TOKEN) {
-    console.error('Error: GITHUB_TOKEN environment variable is required');
+  // Show provider info
+  try {
+    const { name, model } = getProviderInfo();
+    console.log(`🔧 Using AI provider: ${name} (${model})`);
+  } catch (error) {
+    console.error(`Error: ${error.message}`);
     process.exit(1);
   }
 
@@ -270,7 +290,9 @@ async function main() {
   let success = 0;
   let failed = 0;
 
-  for (const dir of directories) {
+  for (let i = 0; i < directories.length; i++) {
+    const dir = directories[i];
+
     if (!fs.existsSync(dir)) {
       console.warn(`⚠️  Directory not found: ${dir}`);
       failed++;
@@ -282,6 +304,11 @@ async function main() {
       success++;
     } else {
       failed++;
+    }
+
+    // Add delay between calls to prevent rate limiting (except for last item)
+    if (i < directories.length - 1) {
+      await sleep(DELAY_BETWEEN_CALLS_MS);
     }
   }
 

@@ -23,11 +23,16 @@ on:
         required: false
         type: string
         default: '*.tf *.ts *.tsx *.js *.jsx *.py'
-      ai_model:
-        description: 'AI model to use for generation'
+      ai_provider:
+        description: 'AI provider (groq, github, openai, anthropic)'
         required: false
         type: string
-        default: 'gpt-4o'
+        default: 'groq'
+      ai_model:
+        description: 'AI model to use for generation (provider-specific, leave empty for default)'
+        required: false
+        type: string
+        default: ''
       run_post_generation:
         description: 'Commands to run after generation (e.g., terraform-docs)'
         required: false
@@ -52,32 +57,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-
-      - name: Download generator scripts
-        run: |
-          mkdir -p /tmp/readme-generator/core /tmp/readme-generator/generators
-
-          # Download core modules
-          curl -sSL -o /tmp/readme-generator/core/github-models.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/core/github-models.js"
-          curl -sSL -o /tmp/readme-generator/core/file-utils.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/core/file-utils.js"
-
-          # Download generators
-          curl -sSL -o /tmp/readme-generator/generators/terraform.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generators/terraform.js"
-          curl -sSL -o /tmp/readme-generator/generators/typescript.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generators/typescript.js"
-          curl -sSL -o /tmp/readme-generator/generators/python.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generators/python.js"
-          curl -sSL -o /tmp/readme-generator/generators/generic.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generators/generic.js"
-          curl -sSL -o /tmp/readme-generator/generators/index.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generators/index.js"
-
-          # Download main script
-          curl -sSL -o /tmp/readme-generator/generate-readme-v2.js \
-            "https://raw.githubusercontent.com/nullplatform/actions-nullplatform-terraform/main/.github/scripts/generate-readme-v2.js"
 
       - name: Find modified directories
         if: ${{ !inputs.generate_all }}
@@ -118,13 +97,17 @@ jobs:
             TYPE_ARG="--type ${{ inputs.generator_type }}"
           fi
 
-          node /tmp/readme-generator/generate-readme-v2.js \
+          node .github/scripts/generate-readme-v2.js \
             --verbose \
             $TYPE_ARG \
             ${{ steps.changes.outputs.dirs }}
         env:
+          AI_PROVIDER: ${{ inputs.ai_provider || secrets.AI_PROVIDER || 'groq' }}
+          AI_MODEL: ${{ inputs.ai_model || secrets.AI_MODEL || '' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AI_MODEL: ${{ inputs.ai_model }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Generate READMEs (all projects)
         if: ${{ inputs.generate_all }}
@@ -134,14 +117,18 @@ jobs:
             TYPE_ARG="--type ${{ inputs.generator_type }}"
           fi
 
-          node /tmp/readme-generator/generate-readme-v2.js \
+          node .github/scripts/generate-readme-v2.js \
             --all \
             --base-dir "${{ inputs.base_dir }}" \
             --verbose \
             $TYPE_ARG
         env:
+          AI_PROVIDER: ${{ inputs.ai_provider || secrets.AI_PROVIDER || 'groq' }}
+          AI_MODEL: ${{ inputs.ai_model || secrets.AI_MODEL || '' }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AI_MODEL: ${{ inputs.ai_model }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
       - name: Run post-generation commands
         if: ${{ inputs.run_post_generation != '' }}
