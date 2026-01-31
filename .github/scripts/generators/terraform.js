@@ -113,8 +113,17 @@ function prepareContext(dir) {
   }
 
   // Separate variables by type
-  const requiredVars = variables.filter(v => !v.hasDefault);
+  // Variables sin default y sin validation = requeridas básicas
+  const requiredVars = variables.filter(v => !v.hasDefault && !v.validation);
+
+  // Variables sin default + con validation = triggers (ej: backup_provider)
+  // Estas van en Basic Usage Y generan secciones condicionales
+  const triggerVars = variables.filter(v => !v.hasDefault && v.validation);
+
+  // Variables con default + con validation = miembros de grupos (ej: backup_s3_bucket)
   const conditionalVars = variables.filter(v => v.hasDefault && v.validation);
+
+  // Variables con default sin validation = opcionales simples
   const optionalVars = variables.filter(v => v.hasDefault && !v.validation);
 
   // Format files for prompt
@@ -127,6 +136,7 @@ function prepareContext(dir) {
     filesContext,
     variables,
     requiredVars,
+    triggerVars,
     conditionalVars,
     optionalVars,
     outputs,
@@ -147,10 +157,15 @@ function getSystemPrompt() {
  * Get the user prompt for AI
  */
 function getUserPrompt(context) {
-  const { requiredVars, conditionalVars } = context;
+  const { requiredVars, triggerVars, conditionalVars } = context;
 
   // Build info about variables for the AI
   const requiredVarNames = requiredVars.map(v => v.name);
+  const triggerVarInfo = triggerVars.map(v => ({
+    name: v.name,
+    condition: v.validation?.condition || '',
+    description: v.description,
+  }));
   const conditionalVarInfo = conditionalVars.map(v => ({
     name: v.name,
     condition: v.validation?.condition || '',
@@ -160,13 +175,20 @@ function getUserPrompt(context) {
   return `Analyze this Terraform module and return a JSON object.
 
 VARIABLE ANALYSIS:
-- Required variables (no default): ${JSON.stringify(requiredVarNames)}
-- Variables with conditional validations: ${JSON.stringify(conditionalVarInfo, null, 2)}
+- Required variables (no default, no validation): ${JSON.stringify(requiredVarNames)}
+- Trigger variables (no default + validation like contains([...], var.X)): ${JSON.stringify(triggerVarInfo, null, 2)}
+- Conditional variables (has default + validation referencing a trigger): ${JSON.stringify(conditionalVarInfo, null, 2)}
+
+UNDERSTANDING TRIGGERS AND CONDITIONAL VARIABLES:
+- A "trigger" variable is one WITHOUT a default that has a validation like: contains(["value1", "value2"], var.trigger_name)
+- Conditional variables reference the trigger in their validation, e.g.: var.trigger_name != "value1" || var.conditional_var != null
+- This means: when trigger_name = "value1", the conditional_var becomes required
 
 TASK:
 1. Analyze the module to generate description and features
-2. For variables with validations, group them by their trigger condition (e.g., all gitlab_* vars are required when git_provider="gitlab")
-3. Generate usage sections for each group
+2. Identify trigger variables and their possible values from the contains() validation
+3. For each trigger value, identify which conditional variables become required
+4. Generate usage sections showing each trigger value with its required conditional variables
 
 Return this exact JSON structure:
 {
@@ -174,9 +196,10 @@ Return this exact JSON structure:
   "features": ["feature 1", "feature 2", "feature 3"],
   "conditionalUsage": [
     {
-      "name": "GitHub",
-      "condition": "git_provider = \\"github\\"",
-      "variables": ["github_organization", "github_installation_id"]
+      "name": "S3 Backup",
+      "condition": "backup_provider = \\"s3\\"",
+      "triggerVar": "backup_provider",
+      "variables": ["backup_s3_bucket", "backup_s3_prefix"]
     }
   ]
 }
@@ -185,11 +208,12 @@ Rules:
 - description: One clear sentence, no period at the end
 - features: Array of 3-7 strings, each starting with a verb (Creates, Configures, Supports, etc.)
 - conditionalUsage: Array of usage groups. Each group has:
-  - name: Human-readable name for the condition (e.g., "GitHub", "Backups Enabled")
-  - condition: The HCL condition to show in comments (e.g., "git_provider = \\"github\\"")
-  - variables: Array of variable names that are required for this condition
-- If there are no conditional validations, return empty array for conditionalUsage
-- Group variables logically by their trigger condition
+  - name: Human-readable name for the condition (e.g., "S3 Backup", "GitLab Provider")
+  - condition: The HCL condition to show in comments (e.g., "backup_provider = \\"s3\\"")
+  - triggerVar: The name of the trigger variable
+  - variables: Array of conditional variable names that are required for this trigger value
+- If there are no trigger variables or conditional validations, return empty array for conditionalUsage
+- Only create conditionalUsage entries for trigger values that have associated conditional variables
 
 Terraform files:
 ${context.filesContext}
@@ -201,7 +225,7 @@ Respond with ONLY the JSON object:`;
  * Generate README content from AI response
  */
 function generateReadme(dir, parsed, context) {
-  const { moduleName, requiredVars, outputs, tag, repository } = context;
+  const { moduleName, requiredVars, triggerVars, outputs, tag, repository } = context;
 
   // Build module source URL - use relative path from repo root
   // Handle both absolute paths (/Users/.../infrastructure/aws/s3) and relative paths (infrastructure/aws/s3)
@@ -213,11 +237,14 @@ function generateReadme(dir, parsed, context) {
   }
   const moduleSource = `git::https://github.com/${repository}.git//${modulePath}?ref=${tag}`;
 
-  // Build Basic Usage with only required variables
+  // Combine required vars and trigger vars for Basic Usage
+  const basicUsageVars = [...requiredVars, ...triggerVars];
+
+  // Build Basic Usage with required and trigger variables
   let basicUsageBlock = '';
-  if (requiredVars.length > 0) {
-    const maxVarLength = Math.max(...requiredVars.map(v => v.name.length));
-    basicUsageBlock = '\n' + requiredVars.map(v =>
+  if (basicUsageVars.length > 0) {
+    const maxVarLength = Math.max(...basicUsageVars.map(v => v.name.length));
+    basicUsageBlock = '\n' + basicUsageVars.map(v =>
       `  ${v.name.padEnd(maxVarLength)} = "your-${v.name.replace(/_/g, '-')}"`
     ).join('\n') + '\n';
   }
@@ -226,7 +253,12 @@ function generateReadme(dir, parsed, context) {
   let conditionalUsageSections = '';
   if (parsed.conditionalUsage && parsed.conditionalUsage.length > 0) {
     conditionalUsageSections = parsed.conditionalUsage.map(usage => {
-      const allVars = [...requiredVars.map(v => v.name), ...usage.variables];
+      // Include required vars, trigger vars, and the conditional variables for this usage
+      const allVars = [
+        ...requiredVars.map(v => v.name),
+        ...triggerVars.map(v => v.name),
+        ...usage.variables
+      ];
       const maxVarLength = Math.max(...allVars.map(v => v.length));
 
       const varsBlock = allVars.map(varName => {
