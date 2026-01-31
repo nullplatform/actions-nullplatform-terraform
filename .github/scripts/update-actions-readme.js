@@ -3,134 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// =============================================================================
-// AI PROVIDERS CONFIGURATION
-// =============================================================================
-
-const PROVIDERS = {
-  groq: {
-    name: 'Groq',
-    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
-    defaultModel: 'llama-3.3-70b-versatile',
-    apiKeyEnv: 'GROQ_API_KEY',
-    format: 'openai',
-  },
-  github: {
-    name: 'GitHub Models',
-    endpoint: 'https://models.inference.ai.azure.com/chat/completions',
-    defaultModel: 'gpt-4o',
-    apiKeyEnv: 'GITHUB_TOKEN',
-    format: 'openai',
-  },
-  openai: {
-    name: 'OpenAI',
-    endpoint: 'https://api.openai.com/v1/chat/completions',
-    defaultModel: 'gpt-4o',
-    apiKeyEnv: 'OPENAI_API_KEY',
-    format: 'openai',
-  },
-  anthropic: {
-    name: 'Anthropic Claude',
-    endpoint: 'https://api.anthropic.com/v1/messages',
-    defaultModel: 'claude-sonnet-4-20250514',
-    apiKeyEnv: 'ANTHROPIC_API_KEY',
-    format: 'anthropic',
-  },
-};
-
-// =============================================================================
-// AI CLIENT
-// =============================================================================
-
-function getProvider() {
-  const providerName = (process.env.AI_PROVIDER || 'groq').toLowerCase();
-  const provider = PROVIDERS[providerName];
-
-  if (!provider) {
-    const available = Object.keys(PROVIDERS).join(', ');
-    throw new Error(`Unknown AI provider: ${providerName}. Available: ${available}`);
-  }
-
-  return provider;
-}
-
-function getApiKey(provider) {
-  const apiKey = process.env[provider.apiKeyEnv];
-
-  if (!apiKey) {
-    throw new Error(`${provider.apiKeyEnv} environment variable is required for ${provider.name}`);
-  }
-
-  return apiKey;
-}
-
-async function callOpenAIFormat(provider, apiKey, model, systemPrompt, userPrompt) {
-  const response = await fetch(provider.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-      temperature: 0.1,
-      max_tokens: 4000,
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`${provider.name} API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return data.choices[0].message.content;
-}
-
-async function callAnthropicFormat(provider, apiKey, model, systemPrompt, userPrompt) {
-  const response = await fetch(provider.endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4000,
-      system: systemPrompt,
-      messages: [
-        { role: 'user', content: userPrompt },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`${provider.name} API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return data.content[0].text;
-}
-
-async function callAI(systemPrompt, userPrompt) {
-  const provider = getProvider();
-  const apiKey = getApiKey(provider);
-  const model = process.env.AI_MODEL || provider.defaultModel;
-
-  if (provider.format === 'openai') {
-    return callOpenAIFormat(provider, apiKey, model, systemPrompt, userPrompt);
-  } else if (provider.format === 'anthropic') {
-    return callAnthropicFormat(provider, apiKey, model, systemPrompt, userPrompt);
-  }
-
-  throw new Error(`Unknown provider format: ${provider.format}`);
-}
+const { callAI, getProviderInfo } = require('./core/ai-client');
 
 // =============================================================================
 // WORKFLOW PROCESSING
@@ -241,14 +114,13 @@ async function main() {
   const workflowsDir = path.join(rootDir, '.github', 'workflows');
   const readmePath = path.join(rootDir, 'README.md');
 
-  const provider = getProvider();
-  const model = process.env.AI_MODEL || provider.defaultModel;
+  const { name: providerName, model } = getProviderInfo();
 
   console.log('📂 Reading workflow files...');
   const workflows = getWorkflowFiles(workflowsDir);
   console.log(`   Found ${workflows.length} workflow files`);
 
-  console.log(`🤖 Generating documentation with ${provider.name} (${model})...`);
+  console.log(`🤖 Generating documentation with ${providerName} (${model})...`);
   const documentation = await generateActionsDocumentation(workflows);
 
   console.log('📝 Updating README.md...');
