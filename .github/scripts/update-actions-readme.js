@@ -35,6 +35,8 @@ IMPORTANT RULES:
 OUTPUT STRUCTURE:
 
 1. SUMMARY TABLE at the top with columns: Workflow (as link to section), Category, Description (one line)
+   CRITICAL: The link anchor MUST match the h3 heading exactly. Convert the heading to lowercase and replace spaces with hyphens.
+   Example: If heading is "### readme-ai-generator-v2", the link must be "[readme-ai-generator-v2](#readme-ai-generator-v2)"
 
 2. CATEGORY SECTIONS - Group workflows into these categories with icons (use h2 ##):
    - 🔍 CI & Validation (linting, branch validation, commit validation)
@@ -44,7 +46,7 @@ OUTPUT STRUCTURE:
    - 📚 Documentation (readme generators, docs)
 
 3. FOR EACH WORKFLOW include:
-   - h3 heading (###) with descriptive name
+   - h3 heading (###) using the workflow's "name:" field (this becomes the anchor for the Summary Table link)
    - One paragraph description explaining WHAT it does and WHEN to use it
    - **Inputs** table (if any): Name | Description | Required | Default
    - **Secrets required** list (analyze the workflow for secrets.* references)
