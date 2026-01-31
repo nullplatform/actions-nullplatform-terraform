@@ -1,214 +1,263 @@
 #!/usr/bin/env node
 
-/**
- * Update README with available GitHub Actions documentation
- * Uses GitHub Models to generate descriptions from workflow files
- */
-
 const fs = require('fs');
 const path = require('path');
-const { callGitHubModel } = require('./core/github-models');
 
-const WORKFLOWS_DIR = path.join(__dirname, '..', 'workflows');
-const README_PATH = path.join(__dirname, '..', '..', 'README.md');
-const START_MARKER = '<!-- ACTIONS-START -->';
-const END_MARKER = '<!-- ACTIONS-END -->';
+// =============================================================================
+// AI PROVIDERS CONFIGURATION
+// =============================================================================
 
-/**
- * Parse a YAML workflow file and extract metadata
- */
-function parseWorkflowFile(filePath) {
-  const content = fs.readFileSync(filePath, 'utf8');
-  const fileName = path.basename(filePath);
+const PROVIDERS = {
+  groq: {
+    name: 'Groq',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    defaultModel: 'llama-3.3-70b-versatile',
+    apiKeyEnv: 'GROQ_API_KEY',
+    format: 'openai',
+  },
+  github: {
+    name: 'GitHub Models',
+    endpoint: 'https://models.inference.ai.azure.com/chat/completions',
+    defaultModel: 'gpt-4o',
+    apiKeyEnv: 'GITHUB_TOKEN',
+    format: 'openai',
+  },
+  openai: {
+    name: 'OpenAI',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    defaultModel: 'gpt-4o',
+    apiKeyEnv: 'OPENAI_API_KEY',
+    format: 'openai',
+  },
+  anthropic: {
+    name: 'Anthropic Claude',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    defaultModel: 'claude-sonnet-4-20250514',
+    apiKeyEnv: 'ANTHROPIC_API_KEY',
+    format: 'anthropic',
+  },
+};
 
-  // Extract name (first 'name:' at root level)
-  const nameMatch = content.match(/^name:\s*(.+)$/m);
-  const name = nameMatch ? nameMatch[1].trim().replace(/['"]/g, '') : fileName;
+// =============================================================================
+// AI CLIENT
+// =============================================================================
 
-  // Check if it's a reusable workflow (has workflow_call)
-  const isReusable = content.includes('workflow_call');
-  if (!isReusable) {
-    return null;
+function getProvider() {
+  const providerName = (process.env.AI_PROVIDER || 'groq').toLowerCase();
+  const provider = PROVIDERS[providerName];
+
+  if (!provider) {
+    const available = Object.keys(PROVIDERS).join(', ');
+    throw new Error(`Unknown AI provider: ${providerName}. Available: ${available}`);
   }
 
-  // Extract inputs
-  const inputs = [];
-  const inputsSection = content.match(/workflow_call:\s*\n\s*inputs:\s*\n([\s\S]*?)(?=\n\s*secrets:|\n\s*jobs:|\n[a-z])/);
-
-  if (inputsSection) {
-    const inputsContent = inputsSection[1];
-    const inputMatches = inputsContent.matchAll(/^\s{6}(\w+):\s*\n([\s\S]*?)(?=^\s{6}\w+:|\s*$)/gm);
-
-    for (const match of inputMatches) {
-      const inputName = match[1];
-      const inputBlock = match[2];
-
-      const descMatch = inputBlock.match(/description:\s*['"]?([^'"{\n]+)['"]?/);
-      const typeMatch = inputBlock.match(/type:\s*(\w+)/);
-      const requiredMatch = inputBlock.match(/required:\s*(true|false)/);
-      const defaultMatch = inputBlock.match(/default:\s*['"]?([^'"\n]+)['"]?/);
-
-      inputs.push({
-        name: inputName,
-        description: descMatch ? descMatch[1].trim() : '',
-        type: typeMatch ? typeMatch[1] : 'string',
-        required: requiredMatch ? requiredMatch[1] === 'true' : false,
-        default: defaultMatch ? defaultMatch[1].trim() : undefined,
-      });
-    }
-  }
-
-  // Extract secrets
-  const secrets = [];
-  const secretsSection = content.match(/secrets:\s*\n([\s\S]*?)(?=\n\s*jobs:|\n[a-z])/);
-
-  if (secretsSection) {
-    const secretsContent = secretsSection[1];
-    const secretMatches = secretsContent.matchAll(/^\s{6}(\w+):\s*\n([\s\S]*?)(?=^\s{6}\w+:|\s*$)/gm);
-
-    for (const match of secretMatches) {
-      const secretName = match[1];
-      const secretBlock = match[2];
-
-      const descMatch = secretBlock.match(/description:\s*['"]?([^'"{\n]+)['"]?/);
-      const requiredMatch = secretBlock.match(/required:\s*(true|false)/);
-
-      secrets.push({
-        name: secretName,
-        description: descMatch ? descMatch[1].trim() : '',
-        required: requiredMatch ? requiredMatch[1] === 'true' : false,
-      });
-    }
-  }
-
-  return {
-    fileName,
-    name,
-    content,
-    inputs,
-    secrets,
-  };
+  return provider;
 }
 
-/**
- * Get all reusable workflows from the workflows directory
- */
-function getWorkflows() {
-  const files = fs.readdirSync(WORKFLOWS_DIR)
-    .filter(f => f.endsWith('.yml') || f.endsWith('.yaml'))
-    .sort();
+function getApiKey(provider) {
+  const apiKey = process.env[provider.apiKeyEnv];
 
-  const workflows = [];
-
-  for (const file of files) {
-    const filePath = path.join(WORKFLOWS_DIR, file);
-    const workflow = parseWorkflowFile(filePath);
-    if (workflow) {
-      workflows.push(workflow);
-    }
+  if (!apiKey) {
+    throw new Error(`${provider.apiKeyEnv} environment variable is required for ${provider.name}`);
   }
 
-  return workflows;
+  return apiKey;
 }
 
-/**
- * Generate documentation using GitHub Models
- */
-async function generateDocumentation(workflows) {
-  const systemPrompt = `You are a technical documentation writer. Generate clear, concise documentation for GitHub Actions reusable workflows.
+async function callOpenAIFormat(provider, apiKey, model, systemPrompt, userPrompt) {
+  const response = await fetch(provider.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
+      temperature: 0.1,
+      max_tokens: 4000,
+    }),
+  });
 
-Output format must be valid Markdown. Use:
-- Tables for inputs/secrets when they exist
-- Brief descriptions (1-2 sentences max per workflow)
-- Group workflows by category if patterns emerge
-- Use code blocks for usage examples
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`${provider.name} API error: ${response.status} - ${error}`);
+  }
 
-Be concise and professional. No fluff or marketing language.`;
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
 
-  const workflowSummaries = workflows.map(w => ({
-    name: w.name,
-    fileName: w.fileName,
-    inputs: w.inputs,
-    secrets: w.secrets,
-    // Include first 100 lines of content for context
-    contentPreview: w.content.split('\n').slice(0, 100).join('\n'),
-  }));
+async function callAnthropicFormat(provider, apiKey, model, systemPrompt, userPrompt) {
+  const response = await fetch(provider.endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 4000,
+      system: systemPrompt,
+      messages: [
+        { role: 'user', content: userPrompt },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`${provider.name} API error: ${response.status} - ${error}`);
+  }
+
+  const data = await response.json();
+  return data.content[0].text;
+}
+
+async function callAI(systemPrompt, userPrompt) {
+  const provider = getProvider();
+  const apiKey = getApiKey(provider);
+  const model = process.env.AI_MODEL || provider.defaultModel;
+
+  if (provider.format === 'openai') {
+    return callOpenAIFormat(provider, apiKey, model, systemPrompt, userPrompt);
+  } else if (provider.format === 'anthropic') {
+    return callAnthropicFormat(provider, apiKey, model, systemPrompt, userPrompt);
+  }
+
+  throw new Error(`Unknown provider format: ${provider.format}`);
+}
+
+// =============================================================================
+// WORKFLOW PROCESSING
+// =============================================================================
+
+function getWorkflowFiles(workflowsDir) {
+  const files = fs.readdirSync(workflowsDir);
+  return files
+    .filter(f => (f.endsWith('.yml') || f.endsWith('.yaml')) && !f.endsWith('.disabled'))
+    .map(f => ({
+      name: f,
+      path: path.join(workflowsDir, f),
+      content: fs.readFileSync(path.join(workflowsDir, f), 'utf-8'),
+    }));
+}
+
+async function generateActionsDocumentation(workflows) {
+  const repoName = process.env.GITHUB_REPOSITORY || 'nullplatform/actions-nullplatform';
+
+  const systemPrompt = `You are a technical documentation expert. Generate clear, well-structured documentation for GitHub Actions reusable workflows.
+
+IMPORTANT RULES:
+- Return ONLY markdown content, no wrapping code blocks
+- Use the workflow's "name:" field as the display name, not the filename
+- Write concise, specific descriptions (avoid generic phrases like "This workflow checks...")
+- Group workflows by category
+- Use the exact repository path for usage examples: ${repoName}
+
+OUTPUT STRUCTURE:
+
+1. SUMMARY TABLE at the top with columns: Workflow (as link to section), Category, Description (one line)
+
+2. CATEGORY SECTIONS - Group workflows into these categories with icons (use h2 ##):
+   - 🔍 CI & Validation (linting, branch validation, commit validation)
+   - 🔒 Security (scans, vulnerability checks)
+   - 🚀 Build & Deploy (docker, ECR, builds)
+   - 📦 Release & Changelog (releases, versioning, changelogs)
+   - 📚 Documentation (readme generators, docs)
+
+3. FOR EACH WORKFLOW include:
+   - h3 heading (###) with descriptive name
+   - One paragraph description explaining WHAT it does and WHEN to use it
+   - **Inputs** table (if any): Name | Description | Required | Default
+   - **Secrets required** list (analyze the workflow for secrets.* references)
+   - **Usage** code block that is READY TO COPY-PASTE:
+     * Must include ALL required inputs with realistic example values
+     * Include commonly used optional inputs with example values
+     * Format: uses: ${repoName}/.github/workflows/FILENAME@main
+     * Add "with:" block if there are inputs
+     * Add "secrets:" block if there are required secrets (use placeholder like \${{ secrets.SECRET_NAME }})
+
+Example of a good usage block:
+\`\`\`yaml
+uses: ${repoName}/.github/workflows/docker-build-push-ecr.yml@main
+with:
+  image_name: my-app
+  context: .
+  dockerfile: Dockerfile
+secrets:
+  aws_role_arn: \${{ secrets.AWS_ROLE_ARN }}
+\`\`\``;
+
+  const workflowSummaries = workflows.map(w => `
+=== ${w.name} ===
+${w.content}
+`).join('\n');
 
   const userPrompt = `Generate documentation for these GitHub Actions reusable workflows.
 
-The documentation should:
-1. Start with a brief intro paragraph
-2. List each workflow with:
-   - Name and file reference
-   - What it does (1-2 sentences)
-   - Usage example showing how to call it
-   - Table of inputs (if any) with columns: Name, Description, Required, Default
-   - Table of secrets (if any) with columns: Name, Description, Required
-3. Group related workflows together (e.g., "Terraform/OpenTofu", "Security", "Docker", "Documentation")
+${workflowSummaries}
 
-Workflows data:
-${JSON.stringify(workflowSummaries, null, 2)}
+Remember:
+- Only document workflows with "workflow_call" trigger (reusable workflows)
+- Skip workflows that are only triggered by push/pull_request/workflow_dispatch without workflow_call
+- Extract secrets from "secrets.*" references in the workflow
+- Be specific in descriptions, avoid generic filler text`;
 
-Generate only the Markdown content, no explanations.`;
-
-  console.log(`Generating documentation for ${workflows.length} workflows...`);
-
-  const documentation = await callGitHubModel(userPrompt, systemPrompt, {
-    maxTokens: 8000,
-    temperature: 0.2,
-  });
-
-  return documentation;
+  return await callAI(systemPrompt, userPrompt);
 }
 
-/**
- * Update README with generated documentation
- */
-function updateReadme(documentation) {
-  let readme = fs.readFileSync(README_PATH, 'utf8');
+function updateReadme(readmePath, newContent) {
+  const readme = fs.readFileSync(readmePath, 'utf-8');
 
-  const startIndex = readme.indexOf(START_MARKER);
-  const endIndex = readme.indexOf(END_MARKER);
+  const startMarker = '<!-- ACTIONS-START -->';
+  const endMarker = '<!-- ACTIONS-END -->';
+
+  const startIndex = readme.indexOf(startMarker);
+  const endIndex = readme.indexOf(endMarker);
 
   if (startIndex === -1 || endIndex === -1) {
-    console.error('Markers not found in README. Please add:');
-    console.error(START_MARKER);
-    console.error(END_MARKER);
-    process.exit(1);
+    throw new Error('README markers not found: <!-- ACTIONS-START --> and <!-- ACTIONS-END -->');
   }
 
-  const before = readme.substring(0, startIndex + START_MARKER.length);
-  const after = readme.substring(endIndex);
+  const updatedReadme =
+    readme.substring(0, startIndex + startMarker.length) +
+    '\n\n' + newContent + '\n\n' +
+    readme.substring(endIndex);
 
-  const newReadme = `${before}\n\n${documentation}\n\n${after}`;
-
-  fs.writeFileSync(README_PATH, newReadme);
-  console.log('README updated successfully');
+  fs.writeFileSync(readmePath, updatedReadme);
 }
 
-/**
- * Main function
- */
+// =============================================================================
+// MAIN
+// =============================================================================
+
 async function main() {
-  try {
-    console.log('Scanning workflows directory...');
-    const workflows = getWorkflows();
+  const rootDir = process.cwd();
+  const workflowsDir = path.join(rootDir, '.github', 'workflows');
+  const readmePath = path.join(rootDir, 'README.md');
 
-    if (workflows.length === 0) {
-      console.log('No reusable workflows found');
-      return;
-    }
+  const provider = getProvider();
+  const model = process.env.AI_MODEL || provider.defaultModel;
 
-    console.log(`Found ${workflows.length} reusable workflows:`);
-    workflows.forEach(w => console.log(`  - ${w.name} (${w.fileName})`));
+  console.log('📂 Reading workflow files...');
+  const workflows = getWorkflowFiles(workflowsDir);
+  console.log(`   Found ${workflows.length} workflow files`);
 
-    const documentation = await generateDocumentation(workflows);
-    updateReadme(documentation);
+  console.log(`🤖 Generating documentation with ${provider.name} (${model})...`);
+  const documentation = await generateActionsDocumentation(workflows);
 
-  } catch (error) {
-    console.error('Error:', error.message);
-    process.exit(1);
-  }
+  console.log('📝 Updating README.md...');
+  updateReadme(readmePath, documentation);
+
+  console.log('✅ Done!');
 }
 
-main();
+main().catch(error => {
+  console.error('❌ Error:', error.message);
+  process.exit(1);
+});
