@@ -26,16 +26,16 @@ Reusable GitHub Actions workflows that support OpenTofu/Terraform module automat
 | Workflow | Category | Description |
 | --- | --- | --- |
 | [branch-validation](#branch-validation) | 🔍 CI & Validation | Validates branch names against a regex pattern |
-| [changelog-release](#changelog-release) | 📦 Release & Changelog | Generates changelog and creates a new release |
+| [changelog-release](#changelog-and-release) | 📦 Release & Changelog | Generates changelog and creates a GitHub Release |
 | [conventional-commit](#conventional-commit) | 🔍 CI & Validation | Validates commits against conventional commit rules |
-| [docker-build-push-ecr](#docker-build-push-ecr) | 🚀 Build & Deploy | Builds and pushes a Docker image to ECR |
+| [docker-build-push-ecr](#docker-build-and-push-to-ecr) | 🚀 Build & Deploy | Builds and pushes a Docker image to ECR |
 | [docker-security-scan](#docker-security-scan) | 🔒 Security | Scans a Docker image for vulnerabilities |
 | [ecr-security-scan](#ecr-security-scan) | 🔒 Security | Scans ECR images for vulnerabilities |
-| [pre-release](#pre-release) | 📦 Release & Changelog | Posts a changelog preview comment |
-| [readme-ai-v2](#readme-ai-v2) | 📚 Documentation | Generates README files using AI |
-| [release](#release) | 📦 Release & Changelog | Creates a new release |
-| [tf-docs](#tf-docs) | 📚 Documentation | Generates Terraform documentation |
-| [tfsec](#tfsec) | 🔒 Security | Scans Terraform code for security issues |
+| [pre-release](#tofu-pre-release) | 📦 Release & Changelog | Posts a changelog preview comment |
+| [readme-ai-v2](#readme-ai-generator-v2) | 📚 Documentation | Generates README files using AI |
+| [release](#tofu-release) | 📦 Release & Changelog | Creates a GitHub Release |
+| [tf-docs](#tofu-docs) | 📚 Documentation | Generates Terraform documentation |
+| [tfsec](#tfsec-security-scan) | 🔒 Security | Scans Terraform code for security issues |
 | [tofu-lint](#tofu-lint) | 🔍 CI & Validation | Lints Tofu code |
 | [tofu-test](#tofu-test) | 🔍 CI & Validation | Tests Tofu modules |
 | [update-readme-actions](#update-readme-actions) | 📚 Documentation | Updates the README with available actions |
@@ -66,7 +66,7 @@ uses: nullplatform/actions-nullplatform/.github/workflows/conventional-commit.ym
 ```
 
 ### tofu-lint
-Lints Tofu code. Use this workflow to enforce consistent coding standards.
+Lints Tofu code. Use this workflow to enforce consistent code formatting and style.
 
 **Usage**
 ```yml
@@ -74,7 +74,7 @@ uses: nullplatform/actions-nullplatform/.github/workflows/tofu-lint.yml@main
 ```
 
 ### tofu-test
-Tests Tofu modules. Use this workflow to ensure your Tofu code is working as expected.
+Tests Tofu modules. Use this workflow to ensure that your Tofu code is working as expected.
 
 **Inputs**
 
@@ -93,7 +93,7 @@ with:
 
 ## 🔒 Security
 ### docker-security-scan
-Scans a Docker image for vulnerabilities. Use this workflow to ensure your Docker images are secure.
+Scans a Docker image for vulnerabilities. Use this workflow to ensure that your Docker images are secure.
 
 **Inputs**
 
@@ -119,7 +119,7 @@ with:
 ```
 
 ### ecr-security-scan
-Scans ECR images for vulnerabilities. Use this workflow to ensure your ECR images are secure.
+Scans ECR images for vulnerabilities. Use this workflow to ensure that your ECR images are secure.
 
 **Inputs**
 
@@ -149,7 +149,7 @@ secrets:
 ```
 
 ### tfsec
-Scans Terraform code for security issues. Use this workflow to ensure your Terraform code is secure.
+Scans Terraform code for security issues. Use this workflow to ensure that your Terraform code is secure.
 
 **Inputs**
 
@@ -205,7 +205,7 @@ secrets:
 
 ## 📦 Release & Changelog
 ### changelog-release
-Generates changelog and creates a new release. Use this workflow to automate your release process.
+Generates changelog and creates a GitHub Release. Use this workflow to automate your release process.
 
 **Inputs**
 
@@ -239,7 +239,7 @@ uses: nullplatform/actions-nullplatform/.github/workflows/pre-release.yml@main
 ```
 
 ### release
-Creates a new release. Use this workflow to automate your release process.
+Creates a GitHub Release. Use this workflow to automate your release process.
 
 **Inputs**
 
@@ -266,7 +266,7 @@ Generates README files using AI. Use this workflow to automate your documentatio
 | generator_type | Force generator type | false |  |
 | generate_all | Generate README for all projects | false | `false` |
 | file_patterns | File patterns to detect changes | false | `*.tf *.ts *.tsx *.js *.jsx *.py` |
-| ai_model | AI model to use | false | `gpt-4o` |
+| ai_model | AI model to use for generation | false | `gpt-4o` |
 | run_post_generation | Commands to run after generation | false |  |
 
 **Usage**
