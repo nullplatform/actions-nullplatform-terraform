@@ -180,15 +180,16 @@ VARIABLE ANALYSIS:
 - Conditional variables (has default + validation referencing a trigger): ${JSON.stringify(conditionalVarInfo, null, 2)}
 
 UNDERSTANDING TRIGGERS AND CONDITIONAL VARIABLES:
-- A "trigger" variable is one WITHOUT a default that has a validation like: contains(["value1", "value2"], var.trigger_name)
-- Conditional variables reference the trigger in their validation, e.g.: var.trigger_name != "value1" || var.conditional_var != null
+- A "trigger" variable has a validation like: contains(["value1", "value2", "value3"], var.trigger_name)
+- Extract ALL possible values from the contains() array
+- Conditional variables reference the trigger: var.trigger_name != "value1" || var.conditional_var != null
 - This means: when trigger_name = "value1", the conditional_var becomes required
 
 TASK:
 1. Analyze the module to generate description and features
-2. Identify trigger variables and their possible values from the contains() validation
-3. For each trigger value, identify which conditional variables become required
-4. Generate usage sections showing each trigger value with its required conditional variables
+2. For EACH trigger variable, extract ALL possible values from its contains() validation
+3. For EACH possible value, identify which conditional variables become required
+4. Generate a usage section for EVERY possible value (even if no conditional variables apply)
 
 Return this exact JSON structure:
 {
@@ -197,9 +198,15 @@ Return this exact JSON structure:
   "conditionalUsage": [
     {
       "name": "S3 Backup",
-      "condition": "backup_provider = \\"s3\\"",
       "triggerVar": "backup_provider",
+      "triggerValue": "s3",
       "variables": ["backup_s3_bucket", "backup_s3_prefix"]
+    },
+    {
+      "name": "Native Backup",
+      "triggerVar": "backup_provider",
+      "triggerValue": "native",
+      "variables": []
     }
   ]
 }
@@ -207,13 +214,13 @@ Return this exact JSON structure:
 Rules:
 - description: One clear sentence, no period at the end
 - features: Array of 3-7 strings, each starting with a verb (Creates, Configures, Supports, etc.)
-- conditionalUsage: Array of usage groups. Each group has:
-  - name: Human-readable name for the condition (e.g., "S3 Backup", "GitLab Provider")
-  - condition: The HCL condition to show in comments (e.g., "backup_provider = \\"s3\\"")
+- conditionalUsage: Array of usage groups for EVERY trigger value. Each group has:
+  - name: Human-readable name for this configuration (e.g., "S3 Backup", "Native Backup")
   - triggerVar: The name of the trigger variable
-  - variables: Array of conditional variable names that are required for this trigger value
-- If there are no trigger variables or conditional validations, return empty array for conditionalUsage
-- Only create conditionalUsage entries for trigger values that have associated conditional variables
+  - triggerValue: The specific value for this section (e.g., "s3", "native", "glacier")
+  - variables: Array of conditional variables required for this trigger value (can be empty [])
+- IMPORTANT: Create an entry for EVERY possible value of each trigger variable
+- If there are no trigger variables, return empty array for conditionalUsage
 
 Terraform files:
 ${context.filesContext}
@@ -237,8 +244,9 @@ function generateReadme(dir, parsed, context) {
   }
   const moduleSource = `git::https://github.com/${repository}.git//${modulePath}?ref=${tag}`;
 
-  // Combine required vars and trigger vars for Basic Usage
-  const basicUsageVars = [...requiredVars, ...triggerVars];
+  // Combine required vars and trigger vars for Basic Usage, sorted alphabetically
+  const basicUsageVars = [...requiredVars, ...triggerVars]
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   // Build Basic Usage with required and trigger variables
   let basicUsageBlock = '';
@@ -253,18 +261,27 @@ function generateReadme(dir, parsed, context) {
   let conditionalUsageSections = '';
   if (parsed.conditionalUsage && parsed.conditionalUsage.length > 0) {
     conditionalUsageSections = parsed.conditionalUsage.map(usage => {
-      // Include required vars, trigger vars, and the conditional variables for this usage
+      // Include required vars, trigger vars, and the conditional variables for this usage, sorted alphabetically
       const allVars = [
         ...requiredVars.map(v => v.name),
         ...triggerVars.map(v => v.name),
         ...usage.variables
-      ];
+      ].sort((a, b) => a.localeCompare(b));
       const maxVarLength = Math.max(...allVars.map(v => v.length));
 
       const varsBlock = allVars.map(varName => {
+        const isTrigger = varName === usage.triggerVar;
         const isConditional = usage.variables.includes(varName);
-        const comment = isConditional ? `  # Required when ${usage.condition}` : '';
-        return `  ${varName.padEnd(maxVarLength)} = "your-${varName.replace(/_/g, '-')}"${comment}`;
+
+        let value;
+        if (isTrigger) {
+          value = `"${usage.triggerValue}"`;
+        } else {
+          value = `"your-${varName.replace(/_/g, '-')}"`;
+        }
+
+        const comment = isConditional ? `  # Required when ${usage.triggerVar} = "${usage.triggerValue}"` : '';
+        return `  ${varName.padEnd(maxVarLength)} = ${value}${comment}`;
       }).join('\n');
 
       return `### Usage with ${usage.name}
